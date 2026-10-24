@@ -1,166 +1,424 @@
 import streamlit as st
-import random
+import streamlit.components.v1 as components
 
-# 페이지 설정
-st.set_page_config(page_title="졸라맨 판타지 RPG", page_icon="⚔️", layout="wide")
+st.set_page_config(page_title="졸라맨 원소 RPG", page_icon="⚔️", layout="wide")
 
-# 1. 게임 상태 초기화 (Session State)
-if 'player' not in st.session_state:
-    st.session_state.player = {
-        'rank': 1,  # 1~5등급
-        'base_hp': 100,
-        'base_en': 50,
-        'base_atk': 10,
-        'base_control': 5,
-        'weapon': "손짓",
-        'affinity': {'life': 0, 'light': 0, 'dark': 0, 'cosmos': 0},
-        'element': 'none', # fire, water, earth, air
-        'sub_element': None,
-        'final_element': None,
-        'kills': 0,
-        'slime_talks': 0,
-        'location': '인간 지역 - 고대 마법 유적',
-        'logs': ["의식이 눈을 뜬다. 손끝에 감기는 것은 무엇인가?"]
+st.title("🗡️ 졸라맨 원소 RPG (메이플스토리 스타일)")
+st.caption("방향키와 키보드를 사용해 직접 캐릭터를 조작하고 5대 대지역을 탐험하세요!")
+
+# HTML5 Canvas + JS 메이플스토리 스타일 실시간 게임 엔진
+game_html = """
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body {
+            margin: 0;
+            background-color: #08090c;
+            color: #fff;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        #gameContainer {
+            position: relative;
+            box-shadow: 0 0 30px rgba(0, 230, 255, 0.2);
+            border-radius: 10px;
+            overflow: hidden;
+            border: 2px solid #28324a;
+        }
+        canvas { background: #000; display: block; }
+        #uiOverlay {
+            position: absolute;
+            top: 15px; left: 15px;
+            pointer-events: none;
+            background: rgba(10, 14, 23, 0.88);
+            padding: 10px 16px;
+            border-radius: 8px;
+            border: 1px solid #3b4c7a;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        #mapText {
+            position: absolute;
+            top: 15px; right: 15px;
+            background: rgba(10, 14, 23, 0.88);
+            padding: 8px 14px;
+            border-radius: 8px;
+            border: 1px solid #3b4c7a;
+            font-weight: bold;
+            color: #ffeb3b;
+            font-size: 13px;
+        }
+        .stat-val { color: #00ffcc; font-weight: bold; }
+        .controls {
+            margin-top: 10px;
+            color: #9aaec4;
+            font-size: 13px;
+            background: #141a26;
+            padding: 6px 16px;
+            border-radius: 20px;
+        }
+        #evolutionChoice {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(15, 20, 32, 0.95);
+            border: 2px solid #00e5ff;
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            display: none;
+        }
+        .choice-btn {
+            background: #232d42; color: #fff;
+            border: 1px solid #00e5ff;
+            padding: 8px 14px; margin: 5px;
+            border-radius: 6px; cursor: pointer; font-weight: bold;
+        }
+        .choice-btn:hover { background: #00e5ff; color: #000; }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="920" height="480"></canvas>
+    
+    <div id="uiOverlay">
+        <div><strong>👑 등급:</strong> <span id="rankText" class="stat-val">1등급 (x1.0)</span></div>
+        <div><strong>❤️ HP:</strong> <span id="hpText" class="stat-val">100/100</span> | <strong>⚡ EN:</strong> <span id="enText" class="stat-val">50/50</span></div>
+        <div><strong>⚔️ 출력:</strong> <span id="atkText" class="stat-val">15</span> | <strong>🔮 제어력:</strong> <span id="ctrlText" class="stat-val">5</span></div>
+        <div><strong>🔥 속성:</strong> <span id="elemText" class="stat-val">기초 화염</span></div>
+    </div>
+
+    <div id="mapText">📍 인간 지역 - 고대 마법 유적</div>
+
+    <div id="evolutionChoice">
+        <h3 style="color:#00e5ff; margin-top:0;">✨ 마력 각성 선택지</h3>
+        <p id="choiceDesc" style="font-size:13px; color:#ccc;">제어력이 한계에 도달했습니다. 불꽃의 형태를 고르세요.</p>
+        <div id="choiceButtons"></div>
+    </div>
+</div>
+
+<div class="controls">
+    🎮 조작법: [← / →] 이동 | [Space] 점프 | [↑] 포탈 이동 | [Z] 검격 공격 | [X] 속성 파동 스킬
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const RANK_MULT = { 1: 1.0, 2: 3.0, 3: 10.0, 4: 50.0, 5: 1000.0 };
+
+const player = {
+    x: 100, y: 300, width: 24, height: 48,
+    vx: 0, vy: 0,
+    isGrounded: false, facing: 'right',
+    rank: 1, baseHp: 100, baseEn: 50, baseAtk: 15, baseControl: 5,
+    element: '기초 화염',
+    affinity: { life: 0 },
+    kills: 0,
+    isAttacking: false, attackTimer: 0,
+    isSkill: false, skillTimer: 0,
+    choicePending: false
+};
+
+const REGIONS = [
+    { name: "인간 지역 - 고대 마법 유적", bgColor: ['#0a0d14', '#182033'], platColor: '#2d3748', mHp: 40, mAtk: 5, mType: '슬라임' },
+    { name: "몬스터 지역 - 생명의 대림", bgColor: ['#0a1a0f', '#13331c'], platColor: '#1e4d2b', mHp: 150, mAtk: 20, mType: '변이 야수' },
+    { name: "천사 지역 - 규율의 신전", bgColor: ['#1a190a', '#3d3814'], platColor: '#5e5421', mHp: 600, mAtk: 80, mType: '빛의 수호자' },
+    { name: "악마 지역 - 본능의 심연", bgColor: ['#1a0a14', '#3d1433'], platColor: '#5e214d', mHp: 3000, mAtk: 350, mType: '심연 마수' },
+    { name: "초월자 지역 - 차원 균열", bgColor: ['#0a181a', '#14383d'], platColor: '#21595e', mHp: 20000, mAtk: 1500, mType: '차원 파괴자' }
+];
+
+let currentRegionIdx = 0;
+
+const platforms = [
+    { x: 0, y: 420, width: 920, height: 60 },
+    { x: 90, y: 320, width: 200, height: 16 },
+    { x: 630, y: 320, width: 200, height: 16 },
+    { x: 350, y: 230, width: 220, height: 16 },
+    { x: 140, y: 150, width: 160, height: 16 }
+];
+
+const portals = [
+    { x: 20, y: 340, width: 40, height: 80, targetDir: -1 },
+    { x: 860, y: 340, width: 40, height: 80, targetDir: 1 }
+];
+
+let monsters = [];
+let particles = [];
+let damageTexts = [];
+
+function spawnMonsters() {
+    monsters = [];
+    const reg = REGIONS[currentRegionIdx];
+    for (let i = 0; i < 3; i++) {
+        monsters.push({
+            x: 240 + i * 200, y: 180,
+            width: 32, height: 32,
+            hp: reg.mHp, maxHp: reg.mHp,
+            vx: (i % 2 === 0 ? 1 : -1) * 1.5,
+            type: reg.mType
+        });
+    }
+}
+spawnMonsters();
+
+const keys = {};
+window.addEventListener('keydown', e => keys[e.key] = true);
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+function addDamageText(x, y, damage, color = '#ffeb3b') {
+    damageTexts.push({ x, y, text: Math.floor(damage), opacity: 1, vy: -2, color });
+}
+
+function checkEvolution() {
+    if (player.choicePending) return;
+
+    if (player.baseControl >= 15 && player.element === '기초 화염') {
+        player.choicePending = true;
+        document.getElementById('evolutionChoice').style.display = 'block';
+        document.getElementById('choiceDesc').innerText = "제어력이 성숙해졌습니다. 응축된 불꽃의 형태를 고르세요.";
+        document.getElementById('choiceButtons').innerHTML = `
+            <button class="choice-btn" onclick="selectEvolution('용암 파동')">🌋 용암 파동</button>
+            <button class="choice-btn" onclick="selectEvolution('플라즈마')">⚡ 플라즈마</button>
+        `;
+    } else if (player.affinity.life >= 20 && (player.element === '용암 파동' || player.element === '플라즈마')) {
+        player.choicePending = true;
+        document.getElementById('evolutionChoice').style.display = 'block';
+        document.getElementById('choiceDesc').innerText = "생명의 신의 기운이 극에 달했습니다. 최종 각성을 이루세요.";
+        document.getElementById('choiceButtons').innerHTML = `
+            <button class="choice-btn" onclick="selectEvolution('🔥 불사조의 야성염')">🔥 불사조의 야성염</button>
+        `;
+    }
+}
+
+function selectEvolution(elemName) {
+    player.element = elemName;
+    player.baseAtk += 20;
+    player.baseControl += 10;
+    player.choicePending = false;
+    document.getElementById('evolutionChoice').style.display = 'none';
+}
+
+function attackHit(range, isSkill = false) {
+    const mult = RANK_MULT[player.rank];
+    const dmg = (isSkill ? player.baseAtk * 3.0 : player.baseAtk) * mult;
+
+    const hitBox = {
+        x: player.facing === 'right' ? player.x + player.width : player.x - range,
+        y: player.y - 10,
+        width: range, height: player.height + 20
+    };
+
+    monsters.forEach((m, idx) => {
+        if (hitBox.x < m.x + m.width && hitBox.x + hitBox.width > m.x &&
+            hitBox.y < m.y + m.height && hitBox.y + hitBox.height > m.y) {
+            
+            m.hp -= dmg;
+            addDamageText(m.x + 10, m.y - 10, dmg, isSkill ? '#ff4d4d' : '#ffffff');
+
+            for (let i = 0; i < 8; i++) {
+                particles.push({
+                    x: m.x + m.width/2, y: m.y + m.height/2,
+                    vx: (Math.random() - 0.5) * 6, vy: (Math.random() - 0.5) * 6,
+                    life: 15, color: isSkill ? '#ff6b35' : '#00e5ff'
+                });
+            }
+
+            if (m.hp <= 0) {
+                monsters.splice(idx, 1);
+                player.kills++;
+                player.baseAtk += 4;
+                player.baseControl += 2;
+                player.affinity.life += 5;
+
+                if (player.kills >= 3 && player.rank === 1) player.rank = 2;
+                checkEvolution();
+
+                setTimeout(() => {
+                    const reg = REGIONS[currentRegionIdx];
+                    monsters.push({
+                        x: Math.random() * 600 + 150, y: 100,
+                        width: 32, height: 32,
+                        hp: reg.mHp, maxHp: reg.mHp,
+                        vx: 1.5, type: reg.mType
+                    });
+                }, 2000);
+            }
+        }
+    });
+}
+
+function update() {
+    if (player.choicePending) return;
+
+    const mult = RANK_MULT[player.rank];
+    const speed = 4.8;
+
+    if (keys['ArrowLeft']) { player.vx = -speed; player.facing = 'left'; }
+    else if (keys['ArrowRight']) { player.vx = speed; player.facing = 'right'; }
+    else { player.vx = 0; }
+
+    if ((keys['Space'] || keys[' ']) && player.isGrounded) {
+        player.vy = -11;
+        player.isGrounded = false;
     }
 
-player = st.session_state.player
-
-# 2. 등급별 곱연산 배율 계산
-RANK_MULTIPLIERS = {1: 1.0, 2: 2.5, 3: 10.0, 4: 50.0, 5: 1000.0}
-mult = RANK_MULTIPLIERS[player['rank']]
-
-max_hp = int(player['base_hp'] * mult)
-max_en = int(player['base_en'] * mult)
-atk = int(player['base_atk'] * mult)
-control = int(player['base_control'] * mult)
-
-# 3. 사이드바 (플레이어 스탯 및 상태)
-st.sidebar.title("📊 캐릭터 정보")
-st.sidebar.markdown(f"**현재 등급:** `{player['rank']}등급` (배율: x{mult})")
-st.sidebar.markdown(f"**HP:** `{max_hp}` | **EN:** `{max_en}`")
-st.sidebar.markdown(f"**출력(공격력):** `{atk}`")
-st.sidebar.markdown(f"**제어력:** `{control}`")
-st.sidebar.markdown(f"**장착 매개체:** `{player['weapon']}`")
-
-element_display = player['final_element'] or player['sub_element'] or player['element']
-st.sidebar.markdown(f"**현재 속성:** `{element_display}`")
-st.sidebar.markdown(f"**현재 위치:** `{player['location']}`")
-
-# 4. 메인 화면 & 2D 졸라맨 연출 (SVG 그래픽)
-st.title("🗡️ 졸라맨 원소 판타지 RPG")
-
-def get_stickman_svg(rank, element):
-    # 속성별 오라 색상 설정
-    color_map = {
-        'none': '#FFFFFF', 'fire': '#FF4500', 'water': '#1E90FF', 
-        'earth': '#8B4513', 'air': '#00FA9A', '태양의 신성염': '#FFD700',
-        '심연의 흑염': '#800080', '불사조의 야성염': '#FF6347'
+    if (keys['ArrowUp']) {
+        portals.forEach(port => {
+            if (player.x < port.x + port.width && player.x + player.width > port.x &&
+                player.y < port.y + port.height && player.y + player.height > port.y) {
+                if (port.targetDir === 1 && currentRegionIdx < REGIONS.length - 1) {
+                    currentRegionIdx++; player.x = 80; spawnMonsters();
+                } else if (port.targetDir === -1 && currentRegionIdx > 0) {
+                    currentRegionIdx--; player.x = 800; spawnMonsters();
+                }
+            }
+        });
     }
-    aura_color = color_map.get(element, '#FFFFFF')
-    stroke_width = 3 + (rank * 1.5)
-    
-    return f"""
-    <svg width="250" height="250" viewBox="0 0 200 200" style="background-color: #111; border-radius: 10px; display: block; margin: auto;">
-        <!-- 오라 이펙트 -->
-        <circle cx="100" cy="100" r="{40 + rank*8}" fill="none" stroke="{aura_color}" stroke-width="{rank*2}" opacity="0.6"/>
-        <!-- 졸라맨 머리 -->
-        <circle cx="100" cy="50" r="16" fill="none" stroke="#FFF" stroke-width="{stroke_width}"/>
-        <!-- 몸통 -->
-        <line x1="100" y1="66" x2="100" y2="120" stroke="#FFF" stroke-width="{stroke_width}"/>
-        <!-- 팔 -->
-        <line x1="100" y1="80" x2="60" y2="100" stroke="#FFF" stroke-width="{stroke_width}"/>
-        <line x1="100" y1="80" x2="140" y2="70" stroke="#FFF" stroke-width="{stroke_width}"/>
-        <!-- 다리 -->
-        <line x1="100" y1="120" x2="70" y2="170" stroke="#FFF" stroke-width="{stroke_width}"/>
-        <line x1="100" y1="120" x2="130" y2="170" stroke="#FFF" stroke-width="{stroke_width}"/>
-    </svg>
-    """
 
-st.components.v1.html(get_stickman_svg(player['rank'], element_display), height=270)
+    if ((keys['z'] || keys['Z']) && !player.isAttacking && !player.isSkill) {
+        player.isAttacking = true; player.attackTimer = 12; attackHit(50, false);
+    }
+    if (player.attackTimer > 0) player.attackTimer--; else player.isAttacking = false;
 
-# 5. 행동 및 탐험 선택지 (로그 업데이트 연동)
-col1, col2 = st.columns(2)
+    if ((keys['x'] || keys['X']) && !player.isSkill && !player.isAttacking) {
+        player.isSkill = true; player.skillTimer = 20; attackHit(90, true);
+    }
+    if (player.skillTimer > 0) player.skillTimer--; else player.isSkill = false;
 
-def add_log(msg):
-    player['logs'].append(msg)
-    if len(player['logs']) > 6:
-        player['logs'].pop(0)
+    player.vy += 0.55;
+    player.x += player.vx;
+    player.y += player.vy;
 
-with col1:
-    st.subheader("🌲 주변 둘러보기 & 탐험")
-    
-    if st.button("고대 쇠검 쥐어보기 (검 매개체)"):
-        player['weapon'] = "고대 쇠검"
-        player['base_atk'] += 5
-        add_log("날카로운 쇠검을 쥐자 검신을 따라 맑은 에너지가 서립니다.")
-        st.rerun()
+    player.isGrounded = false;
+    platforms.forEach(plat => {
+        if (player.x < plat.x + plat.width &&
+            player.x + player.width > plat.x &&
+            player.y + player.height >= plat.y &&
+            player.y + player.height <= plat.y + 16 &&
+            player.vy >= 0) {
+            
+            player.y = plat.y - player.height;
+            player.vy = 0;
+            player.isGrounded = true;
+        }
+    });
 
-    if st.button("부서진 지팡이 조각에 마력 주입 (지팡이)"):
-        player['weapon'] = "마력 지팡이"
-        player['base_control'] += 3
-        add_log("나무 지팡이 끝에서 원초적 마력 파동이 일렁입니다.")
-        st.rerun()
+    if (player.x < 0) player.x = 0;
+    if (player.x > canvas.width - player.width) player.x = canvas.width - player.width;
 
-    if st.button("주먹을 불끈 쥐기 (신체 격투)"):
-        player['weapon'] = "신체 마력"
-        player['base_hp'] += 20
-        add_log("신체 전체의 마력이 불끈 솟아오릅니다.")
-        st.rerun()
+    monsters.forEach(m => {
+        m.x += m.vx;
+        if (m.x < 50 || m.x > 840) m.vx *= -1;
+    });
 
-    if st.button("슬라임과 교감 시도하기"):
-        player['affinity']['life'] += 5
-        player['slime_talks'] += 1
-        add_log("슬라임과 손끝을 맞대자 '생명의 신'의 기운이 감돕니다.")
-        if player['slime_talks'] >= 3 and player['rank'] == 1:
-            player['rank'] = 2
-            add_log("✨ [승급] 몬스터 생태계와의 교감으로 2등급 중위 생명체로 진화했습니다!")
-        st.rerun()
+    particles.forEach((p, i) => {
+        p.x += p.vx; p.y += p.vy; p.life--;
+        if (p.life <= 0) particles.splice(i, 1);
+    });
 
-with col2:
-    st.subheader("🔥 원소 파생 & 수련")
-    
-    # 4대 기본 속성 선택
-    if player['element'] == 'none':
-        st.write("마력을 수련해 속성을 깨우치세요:")
-        if st.button("불(Fire) 속성 획득"):
-            player['element'] = 'fire'
-            add_log("손끝에서 뜨거운 화염 파동이 피어오릅니다.")
-            st.rerun()
-    
-    # 제어력 기반 1차 파생
-    elif player['sub_element'] is None and control >= 10:
-        st.write("💡 제어력이 높아져 마법 분기가 열렸습니다!")
-        if st.button("용암/열압 (파괴 특화)"):
-            player['sub_element'] = "용암 파동"
-            player['base_atk'] += 30
-            add_log("불꽃이 묵직한 용암 형태로 압축됩니다.")
-            st.rerun()
-        if st.button("플라즈마/뇌전 (관통/속도 특화)"):
-            player['sub_element'] = "플라즈마"
-            player['base_control'] += 15
-            add_log("불꽃이 날카로운 뇌전 전력 파동으로 변형됩니다.")
-            st.rerun()
+    damageTexts.forEach((d, i) => {
+        d.y += d.vy; d.opacity -= 0.03;
+        if (d.opacity <= 0) damageTexts.splice(i, 1);
+    });
 
-    # 생명/빛 기운 기반 최종 파생
-    elif player['sub_element'] is not None and player['final_element'] is None and player['affinity']['life'] >= 15:
-        st.write("🌟 '생명의 신' 기운이 강해져 최종 마법 진화가 가능합니다!")
-        if st.button("불사조의 야성염 (최종 파생)"):
-            player['final_element'] = "불사조의 야성염"
-            player['base_hp'] += 200
-            add_log("🔥 [최종 파생] 불사조의 야성염을 완성했습니다!")
-            st.rerun()
+    const reg = REGIONS[currentRegionIdx];
+    document.getElementById('mapText').innerText = `📍 ${reg.name}`;
+    document.getElementById('rankText').innerText = `${player.rank}등급 (x${mult})`;
+    document.getElementById('hpText').innerText = `${Math.floor(player.baseHp * mult)}/${Math.floor(player.baseHp * mult)}`;
+    document.getElementById('enText').innerText = `${Math.floor(player.baseEn * mult)}/${Math.floor(player.baseEn * mult)}`;
+    document.getElementById('atkText').innerText = `${Math.floor(player.baseAtk * mult)}`;
+    document.getElementById('ctrlText').innerText = `${Math.floor(player.baseControl * mult)}`;
+    document.getElementById('elemText').innerText = player.element;
+}
 
-    # 수련 및 전투
-    if st.button("적 몬스터와 전투하기"):
-        dmg = atk * random.randint(1, 3)
-        player['kills'] += 1
-        player['base_atk'] += 2
-        player['base_control'] += 1
-        add_log(f"⚔️ 적을 제압하여 {dmg}의 피해를 입히고 스탯이 상승했습니다.")
-        st.rerun()
+function draw() {
+    const reg = REGIONS[currentRegionIdx];
+    const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    grad.addColorStop(0, reg.bgColor[0]);
+    grad.addColorStop(1, reg.bgColor[1]);
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-# 6. 하단 게임 진행 로그
-st.divider()
-st.subheader("📜 모험 로그")
-for log in reversed(player['logs']):
-    st.write(f"- {log}")
+    platforms.forEach(plat => {
+        ctx.fillStyle = reg.platColor;
+        ctx.fillRect(plat.x, plat.y, plat.width, plat.height);
+        ctx.fillStyle = 'rgba(255,255,255,0.15)';
+        ctx.fillRect(plat.x, plat.y, plat.width, 4);
+    });
+
+    portals.forEach(port => {
+        ctx.fillStyle = 'rgba(0, 229, 255, 0.3)';
+        ctx.fillRect(port.x, port.y, port.width, port.height);
+        ctx.strokeStyle = '#00e5ff'; ctx.lineWidth = 2;
+        ctx.strokeRect(port.x, port.y, port.width, port.height);
+    });
+
+    monsters.forEach(m => {
+        ctx.fillStyle = '#ff3366';
+        ctx.beginPath(); ctx.arc(m.x + m.width/2, m.y + m.height/2, m.width/2, 0, Math.PI * 2); ctx.fill();
+
+        ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(m.x, m.y - 10, m.width, 5);
+        ctx.fillStyle = '#00ffcc'; ctx.fillRect(m.x, m.y - 10, (m.hp / m.maxHp) * m.width, 5);
+    });
+
+    particles.forEach(p => {
+        ctx.fillStyle = p.color; ctx.fillRect(p.x, p.y, 4, 4);
+    });
+
+    const px = player.x + player.width / 2;
+    const py = player.y;
+
+    if (player.rank >= 2) {
+        ctx.strokeStyle = `rgba(0, 229, 255, ${0.4 + Math.sin(Date.now() / 150) * 0.2})`;
+        ctx.lineWidth = 4;
+        ctx.beginPath(); ctx.arc(px, py + 20, 32 + player.rank * 4, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(px, py + 10, 8, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px, py + 18); ctx.lineTo(px, py + 34); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px, py + 34); ctx.lineTo(px - 8, py + 48); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px, py + 34); ctx.lineTo(px + 8, py + 48); ctx.stroke();
+
+    ctx.beginPath(); ctx.moveTo(px, py + 22);
+    if (player.isAttacking) {
+        const dir = player.facing === 'right' ? 1 : -1;
+        ctx.lineTo(px + (26 * dir), py + 18); ctx.stroke();
+        ctx.strokeStyle = '#00ffff'; ctx.beginPath();
+        ctx.arc(px, py + 20, 40, player.facing === 'right' ? -0.8 : 2.2, player.facing === 'right' ? 0.8 : 4.0);
+        ctx.stroke();
+    } else if (player.isSkill) {
+        const dir = player.facing === 'right' ? 1 : -1;
+        ctx.lineTo(px + (18 * dir), py + 10); ctx.stroke();
+        ctx.fillStyle = player.element.includes('불사조') ? '#ff1744' : '#ff9100';
+        ctx.beginPath(); ctx.arc(px + (58 * dir), py + 20, 28, 0, Math.PI * 2); ctx.fill();
+    } else {
+        ctx.lineTo(px - 8, py + 28); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(px, py + 22); ctx.lineTo(px + 8, py + 28); ctx.stroke();
+    }
+
+    damageTexts.forEach(d => {
+        ctx.fillStyle = d.color; ctx.font = 'bold 16px sans-serif';
+        ctx.globalAlpha = d.opacity; ctx.fillText(d.text, d.x, d.y); ctx.globalAlpha = 1.0;
+    });
+}
+
+function gameLoop() {
+    update(); draw(); requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+</body>
+</html>
+"""
+
+# Streamlit 내부에 렌더링
+components.html(game_html, height=580)
