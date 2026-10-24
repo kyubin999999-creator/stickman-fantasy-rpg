@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>졸라맨 판타지 RPG</title>
+
+    <style>
+        body {
+            margin: 0;
+            background-color: #1a1a1a;
+            color: #fff;
+            font-family: sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+        }
+        #gameContainer {
+            position: relative;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
+        canvas {
+            background: #111;
+            display: block;
+            border-radius: 8px;
+        }
+        #uiOverlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            pointer-events: none;
+            font-size: 14px;
+            background: rgba(0,0,0,0.6);
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .controls {
+            margin-top: 10px;
+            color: #aaa;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="800" height="450"></canvas>
+    <div id="uiOverlay">
+        <div id="rankText">등급: 1등급 (x1.0)</div>
+        <div id="statText">HP: 100/100 | EN: 50/50</div>
+        <div id="atkText">출력: 10 | 제어력: 5</div>
+        <div id="elemText">속성: 없음</div>
+    </div>
+</div>
+<div class="controls">
+    조작법: [←/→] 이동 | [Space] 점프 | [Z] 일반 공격 | [X] 마법 방출
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// --- 플레이어 데이터 ---
+const player = {
+    x: 100, y: 300, width: 20, height: 40,
+    vx: 0, vy: 0,
+    isGrounded: false,
+    facing: 'right',
+    
+    // 성장 및 스탯
+    rank: 1,
+    baseHp: 100, baseEn: 50, baseAtk: 10, baseControl: 5,
+    element: 'none', // fire, water 등
+    kills: 0,
+    
+    // 동작
+    isAttacking: false,
+    attackTimer: 0
+};
+
+// 등급 배율
+const RANK_MULT = { 1: 1.0, 2: 2.5, 3: 10.0, 4: 50.0, 5: 1000.0 };
+
+// 지형(발판) 데이터
+const platforms = [
+    { x: 0, y: 400, width: 800, height: 50 },     // 바닥
+    { x: 150, y: 300, width: 150, height: 15 },   // 발판 1
+    { x: 500, y: 280, width: 180, height: 15 },   // 발판 2
+    { x: 320, y: 200, width: 160, height: 15 }    // 발판 3
+];
+
+// 몬스터 배열
+let monsters = [
+    { x: 200, y: 270, width: 25, height: 20, hp: 30, maxHp: 30, type: 'slime', vx: 1 }
+];
+
+// 입력 키 관리
+const keys = {};
+window.addEventListener('keydown', e => keys[e.key] = true);
+window.addEventListener('keyup', e => keys[e.key] = false);
+
+// --- 메인 루프 ---
+function update() {
+    const mult = RANK_MULT[player.rank];
+    const speed = 4;
+    
+    // 1. 좌우 이동
+    if (keys['ArrowLeft']) {
+        player.vx = -speed;
+        player.facing = 'left';
+    } else if (keys['ArrowRight']) {
+        player.vx = speed;
+        player.facing = 'right';
+    } else {
+        player.vx = 0;
+    }
+
+    // 2. 점프
+    if ((keys['Space'] || keys[' ']) && player.isGrounded) {
+        player.vy = -10;
+        player.isGrounded = false;
+    }
+
+    // 3. 공격 (Z키)
+    if ((keys['z'] || keys['Z']) && !player.isAttacking) {
+        player.isAttacking = true;
+        player.attackTimer = 15;
+        checkAttackHit();
+    }
+
+    if (player.attackTimer > 0) player.attackTimer--;
+    else player.isAttacking = false;
+
+    // 물리 적용 (중력)
+    player.vy += 0.5;
+    player.x += player.vx;
+    player.y += player.vy;
+
+    // 지형 충돌 처리
+    player.isGrounded = false;
+    platforms.forEach(plat => {
+        if (player.x < plat.x + plat.width &&
+            player.x + player.width > plat.x &&
+            player.y + player.height >= plat.y &&
+            player.y + player.height <= plat.y + 15 &&
+            player.vy >= 0) {
+            
+            player.y = plat.y - player.height;
+            player.vy = 0;
+            player.isGrounded = true;
+        }
+    });
+
+    // 화면 밖 제한
+    if (player.x < 0) player.x = 0;
+    if (player.x > canvas.width - player.width) player.x = canvas.width - player.width;
+
+    // 몬스터 로직
+    monsters.forEach(m => {
+        m.x += m.vx;
+        if (m.x < 150 || m.x > 300) m.vx *= -1; // 발판 왔다갔다
+    });
+
+    // UI 업데이트
+    document.getElementById('rankText').innerText = `등급: ${player.rank}등급 (x${mult})`;
+    document.getElementById('statText').innerText = `HP: ${Math.floor(player.baseHp * mult)} | EN: ${Math.floor(player.baseEn * mult)}`;
+    document.getElementById('atkText').innerText = `출력: ${Math.floor(player.baseAtk * mult)} | 제어력: ${Math.floor(player.baseControl * mult)}`;
+    document.getElementById('elemText').innerText = `속성: ${player.element}`;
+}
+
+// 공격 판정
+function checkAttackHit() {
+    const atkRange = 40;
+    const hitBox = {
+        x: player.facing === 'right' ? player.x + player.width : player.x - atkRange,
+        y: player.y,
+        width: atkRange,
+        height: player.height
+    };
+
+    monsters.forEach((m, idx) => {
+        if (hitBox.x < m.x + m.width &&
+            hitBox.x + hitBox.width > m.x &&
+            hitBox.y < m.y + m.height &&
+            hitBox.y + hitBox.height > m.y) {
+            
+            const mult = RANK_MULT[player.rank];
+            m.hp -= player.baseAtk * mult;
+            
+            if (m.hp <= 0) {
+                monsters.splice(idx, 1);
+                player.kills++;
+                player.baseAtk += 2;
+                
+                // 몬스터 처치 시 승급 테스트
+                if (player.kills >= 3 && player.rank === 1) {
+                    player.rank = 2;
+                }
+                
+                // 몬스터 리젠
+                setTimeout(() => {
+                    monsters.push({ x: 550, y: 250, width: 25, height: 20, hp: 50, maxHp: 50, type: 'slime', vx: -1 });
+                }, 2000);
+            }
+        }
+    });
+}
+
+// --- 그래픽 그리프 (렌더링) ---
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 1. 배경 유적 느낌 그래픽
+    ctx.fillStyle = '#22252a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 2. 지형(발판) 그리기
+    ctx.fillStyle = '#4a5568';
+    platforms.forEach(plat => {
+        ctx.fillRect(plat.x, plat.y, plat.width, plat.height);
+        ctx.strokeStyle = '#718096';
+        ctx.strokeRect(plat.x, plat.y, plat.width, plat.height);
+    });
+
+    // 3. 몬스터(슬라임) 그리기
+    monsters.forEach(m => {
+        ctx.fillStyle = '#48bb78';
+        ctx.beginPath();
+        ctx.arc(m.x + m.width/2, m.y + m.height/2, m.width/2, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 체력바
+        ctx.fillStyle = '#red';
+        ctx.fillRect(m.x, m.y - 8, m.width, 4);
+        ctx.fillStyle = '#00ff00';
+        ctx.fillRect(m.x, m.y - 8, (m.hp / m.maxHp) * m.width, 4);
+    });
+
+    // 4. 졸라맨(플레이어) 그리기
+    const mult = RANK_MULT[player.rank];
+    ctx.strokeStyle = player.rank >= 2 ? '#f6ad55' : '#ffffff';
+    ctx.lineWidth = 2 + player.rank;
+
+    const px = player.x + player.width / 2;
+    const py = player.y;
+
+    // 머리
+    ctx.beginPath();
+    ctx.arc(px, py + 10, 8, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 몸통
+    ctx.beginPath();
+    ctx.moveTo(px, py + 18);
+    ctx.lineTo(px, py + 30);
+    ctx.stroke();
+
+    // 다리
+    ctx.beginPath();
+    ctx.moveTo(px, py + 30);
+    ctx.lineTo(px - 6, py + 40);
+    ctx.moveTo(px, py + 30);
+    ctx.lineTo(px + 6, py + 40);
+    ctx.stroke();
+
+    // 팔 & 공격 연출
+    ctx.beginPath();
+    ctx.moveTo(px, py + 22);
+    if (player.isAttacking) {
+        const targetX = player.facing === 'right' ? px + 20 : px - 20;
+        ctx.lineTo(targetX, py + 20);
+        // 검 휘두르는 궤적 이펙트
+        ctx.strokeStyle = '#e53e3e';
+        ctx.arc(px, py + 20, 20, player.facing === 'right' ? -0.5 : 2, 0.5);
+    } else {
+        ctx.lineTo(px - 8, py + 26);
+        ctx.moveTo(px, py + 22);
+        ctx.lineTo(px + 8, py + 26);
+    }
+    ctx.stroke();
+}
+
+function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+}
+
+gameLoop();
+</script>
+
+</body>
+</html>
